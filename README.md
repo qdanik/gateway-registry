@@ -4,61 +4,49 @@ CosmWasm registry of gateway peer instances: each allowlisted address publishes 
 
 ## Overview
 
-Solid arrows are calls and writes, dashed arrows are reads. The wasm admin is a chain-level role, and queries are open to anyone and return live instances only.
+The arrows show who may call each operation. The wasm admin is a chain-level role, separate from the contract owner. Writers are the addresses in the contract's own list, which only `SyncWriters` changes; it is separate from the chain parameter `allowed_creator_addresses` that gateways read, so being allowlisted on chain grants no write here.
 
 ```mermaid
-flowchart LR
+flowchart TB
     admin["Wasm admin"]
     owner["Contract owner"]
-    writer["Writer"]
-    sender["Any sender"]
-    reader["Any reader"]
+    writer["Contract writer"]
+    anyone["Anyone"]
 
-    subgraph contract["gateway-registry contract"]
-        migrate["migrate"]
-        ownerMsgs["SyncWriters<br/>SetPaused<br/>SetOwner<br/>UpdateConfig"]
-        writerMsgs["RegisterInstance<br/>PruneExpired"]
-        deregister["DeregisterInstance<br/>own instances only"]
-        queries["Config, Writers<br/>Member, MembersOf<br/>Members"]
-
-        subgraph storage["Stored state"]
-            version[("Contract version")]
-            config[("Config")]
-            writers[("Writers")]
-            instances[("Instances and<br/>height index")]
-        end
+    subgraph contract["gateway-registry"]
+        migrate["Migrate"]
+        ownerCalls["SyncWriters · SetPaused<br/>SetOwner · UpdateConfig"]
+        writerCalls["RegisterInstance<br/>PruneExpired"]
+        deregister["DeregisterInstance<br/>sender's own instances"]
+        queries["Config · Writers<br/>Member · MembersOf · Members"]
     end
 
-    admin --> migrate --> version
-    owner --> ownerMsgs
-    writer --> writerMsgs
-    sender --> deregister
-    reader --> queries
-
-    ownerMsgs --> config
-    ownerMsgs --> writers
-    ownerMsgs --> instances
-    writerMsgs --> instances
-    deregister --> instances
-    queries -.-> storage
+    admin --> migrate
+    owner --> ownerCalls
+    writer --> writerCalls
+    anyone --> deregister
+    anyone -.-> queries
 ```
 
-`SyncWriters` is the owner call that reaches instances, because it deletes those of removed addresses.
+Anyone can query, and `Member`, `MembersOf` and `Members` return live instances only. `SyncWriters` also deletes the instances of removed addresses.
 
-An instance stays live while it is refreshed, and an expired one remains in storage until something deletes it. Refreshing means `RegisterInstance` with the same id, at most once per `min_update_interval_blocks`. Raising `instance_ttl_blocks` also brings an expired instance back.
+Expiry hides an instance from those queries but does not delete it. Refreshing means `RegisterInstance` with the same id, at most once per `min_update_interval_blocks`. Raising `instance_ttl_blocks` also brings an expired instance back.
 
 ```mermaid
 stateDiagram-v2
-    direction LR
-    [*] --> Live: register
-    Live --> Live: refresh
-    Live --> Expired: TTL passed
-    Expired --> Live: refresh
-    Live --> [*]: deregistered
-    Expired --> [*]: pruned or replaced
+    direction TB
+    state "Live and queryable" as Live
+    state "Expired but stored" as Expired
+
+    [*] --> Live: RegisterInstance
+    Live --> Live: Refresh
+    Live --> Expired: TTL reached
+    Expired --> Live: Refresh or TTL raised
+    Live --> [*]: Deregister or SyncWriters
+    Expired --> [*]: Also pruned or replaced
 ```
 
-Deregistering and `SyncWriters` remove an expired instance the same way as a live one.
+Deregistering and `SyncWriters` remove an expired instance the same way as a live one. Only expired instances are pruned, and a new instance id at an address over its limit replaces that address's oldest expired ones.
 
 ## Rules
 
