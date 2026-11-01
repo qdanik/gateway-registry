@@ -2,6 +2,52 @@
 
 CosmWasm registry of gateway peer instances: each allowlisted address publishes the endpoint, transport key fingerprint, protocol and topics of its instances.
 
+## Overview
+
+The arrows show who may call each operation. The wasm admin is a chain-level role, separate from the contract owner. Writers are the addresses in the contract's own list, which only `SyncWriters` changes; it is separate from the chain parameter `allowed_creator_addresses` that gateways read, so being allowlisted on chain grants no write here.
+
+```mermaid
+flowchart TB
+    admin["Wasm admin"]
+    owner["Contract owner"]
+    writer["Contract writer"]
+    anyone["Anyone"]
+
+    subgraph contract["gateway-registry"]
+        migrate["Migrate"]
+        ownerCalls["SyncWriters · SetPaused<br/>SetOwner · UpdateConfig"]
+        writerCalls["RegisterInstance<br/>PruneExpired"]
+        deregister["DeregisterInstance<br/>sender's own instances"]
+        queries["Config · Writers<br/>Member · MembersOf · Members"]
+    end
+
+    admin --> migrate
+    owner --> ownerCalls
+    writer --> writerCalls
+    anyone --> deregister
+    anyone -.-> queries
+```
+
+Anyone can query, and `Member`, `MembersOf` and `Members` return live instances only. `SyncWriters` also deletes the instances of removed addresses.
+
+Expiry hides an instance from those queries but does not delete it. Refreshing means `RegisterInstance` with the same id, at most once per `min_update_interval_blocks`. Raising `instance_ttl_blocks` also brings an expired instance back.
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    state "Live and queryable" as Live
+    state "Expired but stored" as Expired
+
+    [*] --> Live: RegisterInstance
+    Live --> Live: Refresh
+    Live --> Expired: TTL reached
+    Expired --> Live: Refresh or TTL raised
+    Live --> [*]: Deregister or SyncWriters
+    Expired --> [*]: Also pruned or replaced
+```
+
+Deregistering and `SyncWriters` remove an expired instance the same way as a live one. Only expired instances are pruned, and a new instance id at an address over its limit replaces that address's oldest expired ones.
+
 ## Rules
 
 - `RegisterInstance` is writer only and upserts one instance of the sender, at most once per `min_update_interval_blocks` per instance and at most `max_instances_per_address` per address.
